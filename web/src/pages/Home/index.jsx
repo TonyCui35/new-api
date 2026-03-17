@@ -1,356 +1,293 @@
-/*
-Copyright (C) 2025 QuantumNous
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU Affero General Public License as
-published by the Free Software Foundation, either version 3 of the
-License, or (at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-GNU Affero General Public License for more details.
-
-You should have received a copy of the GNU Affero General Public License
-along with this program. If not, see <https://www.gnu.org/licenses/>.
-
-For commercial licensing, please contact support@quantumnous.com
-*/
-
-import React, { useContext, useEffect, useState } from 'react';
-import {
-  Button,
-  Typography,
-  Input,
-  ScrollList,
-  ScrollItem,
-} from '@douyinfe/semi-ui';
-import { API, showError, copy, showSuccess } from '../../helpers';
-import { useIsMobile } from '../../hooks/common/useIsMobile';
-import { API_ENDPOINTS } from '../../constants/common.constant';
-import { StatusContext } from '../../context/Status';
-import { useActualTheme } from '../../context/Theme';
-import { marked } from 'marked';
+import React, { useEffect, useState, useCallback } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import {
-  IconGithubLogo,
-  IconPlay,
-  IconFile,
-  IconCopy,
-} from '@douyinfe/semi-icons';
-import { Link } from 'react-router-dom';
-import NoticeModal from '../../components/layout/NoticeModal';
-import {
-  Moonshot,
-  OpenAI,
-  XAI,
-  Zhipu,
-  Volcengine,
-  Cohere,
-  Claude,
-  Gemini,
-  Suno,
-  Minimax,
-  Wenxin,
-  Spark,
-  Qingyan,
-  DeepSeek,
-  Qwen,
-  Midjourney,
-  Grok,
-  AzureAI,
-  Hunyuan,
-  Xinference,
-} from '@lobehub/icons';
+import * as LobeIcons from '@lobehub/icons';
+import { API } from '../../helpers/api';
+import PublicLayout from '../../components/layout/PublicLayout';
+import ModelCard from '../../components/public/ModelCard';
 
-const { Text } = Typography;
+function SearchIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+    </svg>
+  );
+}
 
-const Home = () => {
-  const { t, i18n } = useTranslation();
-  const [statusState] = useContext(StatusContext);
-  const actualTheme = useActualTheme();
-  const [homePageContentLoaded, setHomePageContentLoaded] = useState(false);
-  const [homePageContent, setHomePageContent] = useState('');
-  const [noticeVisible, setNoticeVisible] = useState(false);
-  const isMobile = useIsMobile();
-  const isDemoSiteMode = statusState?.status?.demo_site_enabled || false;
-  const docsLink = statusState?.status?.docs_link || '';
-  const serverAddress =
-    statusState?.status?.server_address || `${window.location.origin}`;
-  const endpointItems = API_ENDPOINTS.map((e) => ({ value: e }));
-  const [endpointIndex, setEndpointIndex] = useState(0);
-  const isChinese = i18n.language.startsWith('zh');
+function ArrowIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <line x1="5" y1="12" x2="19" y2="12" /><polyline points="12 5 19 12 12 19" />
+    </svg>
+  );
+}
 
-  const displayHomePageContent = async () => {
-    setHomePageContent(localStorage.getItem('home_page_content') || '');
-    const res = await API.get('/api/home_page_content');
-    const { success, message, data } = res.data;
-    if (success) {
-      let content = data;
-      if (!data.startsWith('https://')) {
-        content = marked.parse(data);
-      }
-      setHomePageContent(content);
-      localStorage.setItem('home_page_content', content);
+function resolveLobeIcon(iconStr, size = 32) {
+  if (!iconStr) return null;
+  try {
+    const parts = iconStr.split('.');
+    let target = LobeIcons[parts[0]];
+    if (!target) return null;
+    for (let i = 1; i < parts.length; i++) { target = target[parts[i]]; if (!target) return null; }
+    if (typeof target === 'function' || (target && target.$$typeof)) return React.createElement(target, { size });
+  } catch (_) {}
+  return null;
+}
 
-      // 如果内容是 URL，则发送主题模式
-      if (data.startsWith('https://')) {
-        const iframe = document.querySelector('iframe');
-        if (iframe) {
-          iframe.onload = () => {
-            iframe.contentWindow.postMessage({ themeMode: actualTheme }, '*');
-            iframe.contentWindow.postMessage({ lang: i18n.language }, '*');
+export default function Home() {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const [searchQ, setSearchQ] = useState('');
+  const [vendors, setVendors] = useState([]);
+  const [pricingData, setPricingData] = useState({ models: [], pricingMap: {} });
+  const [loading, setLoading] = useState(true);
+  const [activeTag, setActiveTag] = useState('all');
+
+  useEffect(() => {
+    let alive = true;
+    async function load() {
+      try {
+        const pricingRes = await API.get('/api/pricing');
+        if (!alive) return;
+
+        const pricingArr = pricingRes.data?.data || [];
+        const pricingMap = {};
+        pricingArr.forEach(p => { pricingMap[p.model_name] = p; });
+
+        // vendors returned by /api/pricing: [{id, name, icon?}]
+        const vendorArr = Array.isArray(pricingRes.data?.vendors)
+          ? pricingRes.data.vendors
+          : [];
+
+        // Build a vendorId → vendor lookup map
+        const vendorById = {};
+        vendorArr.forEach(v => { vendorById[v.id] = v; });
+
+        // Count models per vendor
+        const countById = {};
+        pricingArr.forEach(p => {
+          if (p.vendor_id) countById[p.vendor_id] = (countById[p.vendor_id] || 0) + 1;
+        });
+
+        const mergedVendors = vendorArr
+          .map(v => ({
+            id: v.id,
+            name: v.name,
+            icon: v.icon || '',
+            model_count: countById[v.id] || 0,
+          }))
+          .sort((a, b) => b.model_count - a.model_count);
+
+        const models = pricingArr.map(p => {
+          const v = vendorById[p.vendor_id];
+          return {
+            model_name: p.model_name,
+            description: p.description || '',
+            icon: p.icon || '',
+            tags: p.tags || '',
+            supported_endpoint_types: p.supported_endpoint_types || [],
+            vendor_id: p.vendor_id || 0,
+            vendor_name: v ? v.name : '',
+            vendor_icon: v ? (v.icon || '') : '',
           };
-        }
+        });
+
+        setVendors(mergedVendors);
+        setPricingData({ models, pricingMap });
+      } catch (e) {
+        console.error('Home load error', e);
+      } finally {
+        if (alive) setLoading(false);
       }
-    } else {
-      showError(message);
-      setHomePageContent('加载首页内容失败...');
     }
-    setHomePageContentLoaded(true);
-  };
-
-  const handleCopyBaseURL = async () => {
-    const ok = await copy(serverAddress);
-    if (ok) {
-      showSuccess(t('已复制到剪切板'));
-    }
-  };
-
-  useEffect(() => {
-    const checkNoticeAndShow = async () => {
-      const lastCloseDate = localStorage.getItem('notice_close_date');
-      const today = new Date().toDateString();
-      if (lastCloseDate !== today) {
-        try {
-          const res = await API.get('/api/notice');
-          const { success, data } = res.data;
-          if (success && data && data.trim() !== '') {
-            setNoticeVisible(true);
-          }
-        } catch (error) {
-          console.error('获取公告失败:', error);
-        }
-      }
-    };
-
-    checkNoticeAndShow();
+    load();
+    return () => { alive = false; };
   }, []);
 
-  useEffect(() => {
-    displayHomePageContent().then();
-  }, []);
+  const handleSearch = useCallback((e) => {
+    e.preventDefault();
+    const q = searchQ.trim();
+    navigate(q ? `/models?q=${encodeURIComponent(q)}` : '/models');
+  }, [searchQ, navigate]);
 
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setEndpointIndex((prev) => (prev + 1) % endpointItems.length);
-    }, 3000);
-    return () => clearInterval(timer);
-  }, [endpointItems.length]);
+  const TAGS = [
+    { key: 'all', label: t('全部') },
+    { key: 'chat', label: t('对话') },
+    { key: 'vision', label: t('视觉') },
+    { key: 'image', label: t('图像') },
+    { key: 'audio', label: t('音频') },
+    { key: 'video', label: t('视频') },
+    { key: 'embedding', label: t('向量') },
+    { key: 'code', label: t('代码') },
+    { key: 'reasoning', label: t('推理') },
+  ];
+
+  // Map tag keys to supported_endpoint_types values
+  const TAG_ENDPOINT_MAP = {
+    chat: ['openai', 'chat'],
+    vision: ['openai', 'vision'],
+    image: ['image-generation', 'image'],
+    audio: ['audio', 'speech', 'transcription'],
+    video: ['video'],
+    embedding: ['embeddings', 'embedding'],
+    code: ['openai'],
+    reasoning: ['openai'],
+  };
+
+  const filteredModels = pricingData.models
+    .filter(m => {
+      if (activeTag === 'all') return true;
+      const endpoints = m.supported_endpoint_types || [];
+      const tagsStr = (m.tags || '').toLowerCase();
+      const nameStr = (m.model_name || '').toLowerCase();
+      const endpointKeywords = TAG_ENDPOINT_MAP[activeTag] || [activeTag];
+      return (
+        endpoints.some(e => endpointKeywords.some(k => e.includes(k))) ||
+        tagsStr.includes(activeTag) ||
+        nameStr.includes(activeTag)
+      );
+    })
+    .slice(0, 12);
 
   return (
-    <div className='w-full overflow-x-hidden'>
-      <NoticeModal
-        visible={noticeVisible}
-        onClose={() => setNoticeVisible(false)}
-        isMobile={isMobile}
-      />
-      {homePageContentLoaded && homePageContent === '' ? (
-        <div className='w-full overflow-x-hidden'>
-          {/* Banner 部分 */}
-          <div className='w-full border-b border-semi-color-border min-h-[500px] md:min-h-[600px] lg:min-h-[700px] relative overflow-x-hidden'>
-            {/* 背景模糊晕染球 */}
-            <div className='blur-ball blur-ball-indigo' />
-            <div className='blur-ball blur-ball-teal' />
-            <div className='flex items-center justify-center h-full px-4 py-20 md:py-24 lg:py-32 mt-10'>
-              {/* 居中内容区 */}
-              <div className='flex flex-col items-center justify-center text-center max-w-4xl mx-auto'>
-                <div className='flex flex-col items-center justify-center mb-6 md:mb-8'>
-                  <h1
-                    className={`text-4xl md:text-5xl lg:text-6xl xl:text-7xl font-bold text-semi-color-text-0 leading-tight ${isChinese ? 'tracking-wide md:tracking-wider' : ''}`}
-                  >
-                    <>
-                      {t('统一的')}
-                      <br />
-                      <span className='shine-text'>{t('大模型接口网关')}</span>
-                    </>
-                  </h1>
-                  <p className='text-base md:text-lg lg:text-xl text-semi-color-text-1 mt-4 md:mt-6 max-w-xl'>
-                    {t('更好的价格，更好的稳定性，只需要将模型基址替换为：')}
-                  </p>
-                  {/* BASE URL 与端点选择 */}
-                  <div className='flex flex-col md:flex-row items-center justify-center gap-4 w-full mt-4 md:mt-6 max-w-md'>
-                    <Input
-                      readonly
-                      value={serverAddress}
-                      className='flex-1 !rounded-full'
-                      size={isMobile ? 'default' : 'large'}
-                      suffix={
-                        <div className='flex items-center gap-2'>
-                          <ScrollList
-                            bodyHeight={32}
-                            style={{ border: 'unset', boxShadow: 'unset' }}
-                          >
-                            <ScrollItem
-                              mode='wheel'
-                              cycled={true}
-                              list={endpointItems}
-                              selectedIndex={endpointIndex}
-                              onSelect={({ index }) => setEndpointIndex(index)}
-                            />
-                          </ScrollList>
-                          <Button
-                            type='primary'
-                            onClick={handleCopyBaseURL}
-                            icon={<IconCopy />}
-                            className='!rounded-full'
-                          />
-                        </div>
-                      }
-                    />
-                  </div>
-                </div>
+    <PublicLayout>
+      <div className="pub-page">
 
-                {/* 操作按钮 */}
-                <div className='flex flex-row gap-4 justify-center items-center'>
-                  <Link to='/console'>
-                    <Button
-                      theme='solid'
-                      type='primary'
-                      size={isMobile ? 'default' : 'large'}
-                      className='!rounded-3xl px-8 py-2'
-                      icon={<IconPlay />}
-                    >
-                      {t('获取密钥')}
-                    </Button>
-                  </Link>
-                  {isDemoSiteMode && statusState?.status?.version ? (
-                    <Button
-                      size={isMobile ? 'default' : 'large'}
-                      className='flex items-center !rounded-3xl px-6 py-2'
-                      icon={<IconGithubLogo />}
-                      onClick={() =>
-                        window.open(
-                          'https://github.com/QuantumNous/new-api',
-                          '_blank',
-                        )
-                      }
-                    >
-                      {statusState.status.version}
-                    </Button>
-                  ) : (
-                    docsLink && (
-                      <Button
-                        size={isMobile ? 'default' : 'large'}
-                        className='flex items-center !rounded-3xl px-6 py-2'
-                        icon={<IconFile />}
-                        onClick={() => window.open(docsLink, '_blank')}
-                      >
-                        {t('文档')}
-                      </Button>
-                    )
-                  )}
-                </div>
+        {/* Hero */}
+        <section className="pub-hero">
+          <h1 className="pub-hero-title">
+            {t('发现与接入')}<br />
+            <span>{t('顶尖 AI 模型')}</span>
+          </h1>
+          <p className="pub-hero-sub">
+            {t('统一 API，一个密钥访问 40+ 服务商、数百个顶尖模型。')}
+          </p>
+          <form className="pub-search-wrap" onSubmit={handleSearch}>
+            <input
+              className="pub-search"
+              placeholder={t('搜索模型，如 GPT-4o、Claude 3.5、Gemini...')}
+              value={searchQ}
+              onChange={e => setSearchQ(e.target.value)}
+            />
+            <button type="submit" style={{ background: 'none', border: 'none', cursor: 'pointer' }} className="pub-search-icon">
+              <SearchIcon />
+            </button>
+          </form>
+        </section>
 
-                {/* 框架兼容性图标 */}
-                <div className='mt-12 md:mt-16 lg:mt-20 w-full'>
-                  <div className='flex items-center mb-6 md:mb-8 justify-center'>
-                    <Text
-                      type='tertiary'
-                      className='text-lg md:text-xl lg:text-2xl font-light'
-                    >
-                      {t('支持众多的大模型供应商')}
-                    </Text>
-                  </div>
-                  <div className='flex flex-wrap items-center justify-center gap-3 sm:gap-4 md:gap-6 lg:gap-8 max-w-5xl mx-auto px-4'>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Moonshot size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <OpenAI size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <XAI size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Zhipu.Color size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Volcengine.Color size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Cohere.Color size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Claude.Color size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Gemini.Color size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Suno size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Minimax.Color size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Wenxin.Color size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Spark.Color size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Qingyan.Color size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <DeepSeek.Color size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Qwen.Color size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Midjourney size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Grok size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <AzureAI.Color size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Hunyuan.Color size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Xinference.Color size={40} />
-                    </div>
-                    <div className='w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 flex items-center justify-center'>
-                      <Typography.Text className='!text-lg sm:!text-xl md:!text-2xl lg:!text-3xl font-bold'>
-                        30+
-                      </Typography.Text>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
+        {/* Stats */}
+        <div className="pub-stats">
+          <div className="pub-stat">
+            <div className="pub-stat-value">{loading ? '…' : `${pricingData.models.length}+`}</div>
+            <div className="pub-stat-label">{t('可用模型')}</div>
+          </div>
+          <div className="pub-stat-divider" />
+          <div className="pub-stat">
+            <div className="pub-stat-value">{loading ? '…' : `${vendors.length}+`}</div>
+            <div className="pub-stat-label">{t('AI 服务商')}</div>
+          </div>
+          <div className="pub-stat-divider" />
+          <div className="pub-stat">
+            <div className="pub-stat-value">99.9%</div>
+            <div className="pub-stat-label">{t('服务可用率')}</div>
+          </div>
+          <div className="pub-stat-divider" />
+          <div className="pub-stat">
+            <div className="pub-stat-value">OpenAI</div>
+            <div className="pub-stat-label">{t('兼容 API')}</div>
           </div>
         </div>
-      ) : (
-        <div className='overflow-x-hidden w-full'>
-          {homePageContent.startsWith('https://') ? (
-            <iframe
-              src={homePageContent}
-              className='w-full h-screen border-none'
-            />
-          ) : (
-            <div
-              className='mt-[60px]'
-              dangerouslySetInnerHTML={{ __html: homePageContent }}
-            />
-          )}
-        </div>
-      )}
-    </div>
-  );
-};
 
-export default Home;
+        {/* Featured models */}
+        <section className="pub-section">
+          <div className="pub-section-header">
+            <h2 className="pub-section-title">{t('精选模型')}</h2>
+            <Link to="/models" className="pub-section-link" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              {t('查看全部')} <ArrowIcon />
+            </Link>
+          </div>
+
+          <div className="pub-chips">
+            {TAGS.map(tag => (
+              <button
+                key={tag.key}
+                className={'pub-chip' + (activeTag === tag.key ? ' active' : '')}
+                onClick={() => setActiveTag(tag.key)}
+              >
+                {tag.label}
+              </button>
+            ))}
+          </div>
+
+          {loading ? (
+            <div className="pub-model-grid">
+              {Array.from({ length: 8 }).map((_, i) => (
+                <div key={i} className="pub-model-card" style={{ minHeight: 180 }}>
+                  <div className="pub-skeleton" style={{ height: 40, width: '100%' }} />
+                  <div className="pub-skeleton" style={{ height: 14, width: '70%', marginTop: 10 }} />
+                  <div className="pub-skeleton" style={{ height: 14, width: '50%', marginTop: 6 }} />
+                </div>
+              ))}
+            </div>
+          ) : filteredModels.length === 0 ? (
+            <div className="pub-empty">
+              <div className="pub-empty-icon">🔍</div>
+              <div className="pub-empty-title">{t('暂无模型')}</div>
+            </div>
+          ) : (
+            <div className="pub-model-grid">
+              {filteredModels.map(m => (
+                <ModelCard key={m.model_name} model={m} pricing={pricingData.pricingMap[m.model_name]} />
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* Vendor showcase */}
+        {vendors.length > 0 && (
+          <section className="pub-section">
+            <div className="pub-section-header">
+              <h2 className="pub-section-title">{t('服务商')}</h2>
+            </div>
+            <div className="pub-vendor-grid">
+              {vendors.slice(0, 16).map(vendor => {
+                const icon = resolveLobeIcon(vendor.icon, 30);
+                return (
+                  <Link key={vendor.name} to={`/${vendor.name}`} className="pub-vendor-card">
+                    <div className="pub-vendor-icon">{icon || vendor.name[0]?.toUpperCase()}</div>
+                    <div className="pub-vendor-name">{vendor.name}</div>
+                    {vendor.model_count > 0 && (
+                      <div className="pub-vendor-count">{vendor.model_count} {t('个模型')}</div>
+                    )}
+                  </Link>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
+        {/* CTA */}
+        <section style={{
+          background: 'var(--pub-primary-10)',
+          border: '1.5px solid var(--pub-primary-20)',
+          borderRadius: 'var(--pub-radius-xl)',
+          padding: '48px 40px',
+          textAlign: 'center',
+          margin: '48px 0 80px',
+        }}>
+          <h2 style={{ fontSize: 24, fontWeight: 700, color: 'var(--pub-text)', marginBottom: 12, letterSpacing: -0.3 }}>
+            {t('立即开始使用 ElkAPI')}
+          </h2>
+          <p style={{ fontSize: 15, color: 'var(--pub-text-2)', marginBottom: 28 }}>
+            {t('注册即可获得免费额度，无需信用卡。')}
+          </p>
+          <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap' }}>
+            <Link to="/register" className="pub-btn pub-btn-primary">{t('免费注册')}</Link>
+            <Link to="/models" className="pub-btn pub-btn-outline">{t('浏览模型')}</Link>
+          </div>
+        </section>
+
+      </div>
+    </PublicLayout>
+  );
+}

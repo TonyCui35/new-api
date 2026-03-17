@@ -49,6 +49,10 @@ import OAuth2Callback from './components/auth/OAuth2Callback';
 import PersonalSetting from './components/settings/PersonalSetting';
 import Setup from './pages/Setup';
 import SetupCheck from './components/layout/SetupCheck';
+import ModelsPage from './pages/Models';
+
+const VendorDetail = lazy(() => import('./pages/VendorDetail'));
+const ModelDetail = lazy(() => import('./pages/ModelDetail'));
 
 const Home = lazy(() => import('./pages/Home'));
 const Dashboard = lazy(() => import('./pages/Dashboard'));
@@ -377,6 +381,36 @@ function App() {
             </PrivateRoute>
           }
         />
+        {/* Public marketplace routes — models browser */}
+        <Route
+          path='/models'
+          element={
+            <Suspense fallback={<Loading />} key={location.pathname}>
+              <ModelsPage />
+            </Suspense>
+          }
+        />
+
+        {/* /:vendor — vendor detail page (catch-all; must stay after all specific routes) */}
+        <Route
+          path='/:vendor'
+          element={
+            <Suspense fallback={<Loading />} key={location.pathname}>
+              <VendorDetail />
+            </Suspense>
+          }
+        />
+
+        {/* /:vendor/:model — model detail page */}
+        <Route
+          path='/:vendor/:model'
+          element={
+            <Suspense fallback={<Loading />} key={location.pathname}>
+              <ModelDetail />
+            </Suspense>
+          }
+        />
+
         <Route path='*' element={<NotFound />} />
       </Routes>
     </SetupCheck>

@@ -89,19 +89,14 @@ export default defineConfig({
   },
   server: {
     host: '0.0.0.0',
-    proxy: {
-      '/api': {
-        target: 'http://localhost:3000',
-        changeOrigin: true,
-      },
-      '/mj': {
-        target: 'http://localhost:3000',
-        changeOrigin: true,
-      },
-      '/pg': {
-        target: 'http://localhost:3000',
-        changeOrigin: true,
-      },
-    },
+    proxy: (() => {
+      const apiTarget = process.env.VITE_API_BASE_URL || 'http://localhost:3000';
+      return {
+        '/api': { target: apiTarget, changeOrigin: true },
+        '/mj': { target: apiTarget, changeOrigin: true },
+        '/pg': { target: apiTarget, changeOrigin: true },
+        '/v1': { target: apiTarget, changeOrigin: true },
+      };
+    })(),
   },
 });

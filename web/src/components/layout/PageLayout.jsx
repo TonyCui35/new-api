@@ -61,9 +61,24 @@ const PageLayout = () => {
     '/pricing',
   ];
 
-  const shouldHideFooter = cardProPages.includes(location.pathname);
+  // Public marketplace pages use their own PublicLayout (header + footer)
+  // so we must hide the old HeaderBar and FooterBar for them.
+  const PUBLIC_RESERVED = new Set([
+    'setup', 'login', 'register', 'reset', 'user', 'about', 'pricing',
+    'forbidden', 'oauth', 'console', 'chat2link', 'user-agreement',
+    'privacy-policy', 'models',
+  ]);
+  const isPublicMarketPage = (() => {
+    const p = location.pathname;
+    if (p === '/' || p === '/models') return true;
+    const parts = p.split('/').filter(Boolean);
+    return parts.length >= 1 && parts.length <= 2 && !PUBLIC_RESERVED.has(parts[0]);
+  })();
+
+  const shouldHideFooter = isPublicMarketPage || cardProPages.includes(location.pathname);
 
   const shouldInnerPadding =
+    !isPublicMarketPage &&
     location.pathname.includes('/console') &&
     !location.pathname.startsWith('/console/chat') &&
     location.pathname !== '/console/playground';
@@ -152,22 +167,24 @@ const PageLayout = () => {
         overflow: isMobile ? 'visible' : 'hidden',
       }}
     >
-      <Header
-        style={{
-          padding: 0,
-          height: 'auto',
-          lineHeight: 'normal',
-          position: 'fixed',
-          width: '100%',
-          top: 0,
-          zIndex: 100,
-        }}
-      >
-        <HeaderBar
-          onMobileMenuToggle={() => setDrawerOpen((prev) => !prev)}
-          drawerOpen={drawerOpen}
-        />
-      </Header>
+      {!isPublicMarketPage && (
+        <Header
+          style={{
+            padding: 0,
+            height: 'auto',
+            lineHeight: 'normal',
+            position: 'fixed',
+            width: '100%',
+            top: 0,
+            zIndex: 100,
+          }}
+        >
+          <HeaderBar
+            onMobileMenuToggle={() => setDrawerOpen((prev) => !prev)}
+            drawerOpen={drawerOpen}
+          />
+        </Header>
+      )}
       <Layout
         style={{
           overflow: isMobile ? 'visible' : 'auto',

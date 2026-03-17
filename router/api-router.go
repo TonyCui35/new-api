@@ -46,6 +46,14 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.GET("/oauth/:provider", middleware.CriticalRateLimit(), controller.HandleOAuth)
 		apiRouter.GET("/ratio_config", middleware.CriticalRateLimit(), controller.GetRatioConfig)
 
+		// Public marketplace API — no auth required
+		publicGroup := apiRouter.Group("/public")
+		{
+			publicGroup.GET("/vendors", controller.GetPublicVendors)
+			publicGroup.GET("/vendors/:name", controller.GetPublicVendorByName)
+			publicGroup.GET("/models", controller.GetPublicModels)
+		}
+
 		apiRouter.POST("/stripe/webhook", controller.StripeWebhook)
 		apiRouter.POST("/creem/webhook", controller.CreemWebhook)
 
