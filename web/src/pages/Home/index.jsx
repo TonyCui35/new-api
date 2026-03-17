@@ -47,43 +47,48 @@ export default function Home() {
     let alive = true;
     async function load() {
       try {
-        const [pricingRes, vendorRes] = await Promise.all([
-          API.get('/api/pricing'),
-          API.get('/api/public/vendors'),
-        ]);
+        const pricingRes = await API.get('/api/pricing');
         if (!alive) return;
 
         const pricingArr = pricingRes.data?.data || [];
         const pricingMap = {};
         pricingArr.forEach(p => { pricingMap[p.model_name] = p; });
 
-        const pricingVendors = pricingRes.data?.vendors || [];
-        const publicVendors = vendorRes.data?.data || [];
-        const vendorArr = Array.isArray(pricingVendors) ? pricingVendors : Object.values(pricingVendors);
-        const countMap = {};
-        publicVendors.forEach(v => { countMap[v.name] = v.model_count; });
+        // vendors returned by /api/pricing: [{id, name, icon?}]
+        const vendorArr = Array.isArray(pricingRes.data?.vendors)
+          ? pricingRes.data.vendors
+          : [];
+
+        // Build a vendorId → vendor lookup map
+        const vendorById = {};
+        vendorArr.forEach(v => { vendorById[v.id] = v; });
+
+        // Count models per vendor
+        const countById = {};
+        pricingArr.forEach(p => {
+          if (p.vendor_id) countById[p.vendor_id] = (countById[p.vendor_id] || 0) + 1;
+        });
 
         const mergedVendors = vendorArr
-          .filter(v => (v.Status || v.status) === 1)
           .map(v => ({
-            id: v.Id || v.id,
-            name: v.Name || v.name,
-            description: v.Description || v.description,
-            icon: v.Icon || v.icon,
-            model_count: countMap[v.Name || v.name] || 0,
+            id: v.id,
+            name: v.name,
+            icon: v.icon || '',
+            model_count: countById[v.id] || 0,
           }))
           .sort((a, b) => b.model_count - a.model_count);
 
         const models = pricingArr.map(p => {
-          const v = vendorArr.find(vv => (vv.Id || vv.id) === p.vendor_id);
+          const v = vendorById[p.vendor_id];
           return {
             model_name: p.model_name,
-            description: p.description,
-            icon: p.icon,
-            tags: p.tags,
-            vendor_id: p.vendor_id,
-            vendor_name: v ? (v.Name || v.name) : '',
-            vendor_icon: v ? (v.Icon || v.icon) : '',
+            description: p.description || '',
+            icon: p.icon || '',
+            tags: p.tags || '',
+            supported_endpoint_types: p.supported_endpoint_types || [],
+            vendor_id: p.vendor_id || 0,
+            vendor_name: v ? v.name : '',
+            vendor_icon: v ? (v.icon || '') : '',
           };
         });
 
@@ -117,11 +122,30 @@ export default function Home() {
     { key: 'reasoning', label: t('推理') },
   ];
 
+  // Map tag keys to supported_endpoint_types values
+  const TAG_ENDPOINT_MAP = {
+    chat: ['openai', 'chat'],
+    vision: ['openai', 'vision'],
+    image: ['image-generation', 'image'],
+    audio: ['audio', 'speech', 'transcription'],
+    video: ['video'],
+    embedding: ['embeddings', 'embedding'],
+    code: ['openai'],
+    reasoning: ['openai'],
+  };
+
   const filteredModels = pricingData.models
     .filter(m => {
       if (activeTag === 'all') return true;
+      const endpoints = m.supported_endpoint_types || [];
       const tagsStr = (m.tags || '').toLowerCase();
-      return tagsStr.includes(activeTag) || (m.model_name || '').toLowerCase().includes(activeTag);
+      const nameStr = (m.model_name || '').toLowerCase();
+      const endpointKeywords = TAG_ENDPOINT_MAP[activeTag] || [activeTag];
+      return (
+        endpoints.some(e => endpointKeywords.some(k => e.includes(k))) ||
+        tagsStr.includes(activeTag) ||
+        nameStr.includes(activeTag)
+      );
     })
     .slice(0, 12);
 

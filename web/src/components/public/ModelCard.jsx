@@ -58,14 +58,34 @@ function getPricingDisplay(pricing) {
   return { input: fmtPrice(inputUsd), output: fmtPrice(outputUsd) };
 }
 
-/* Parse tags string → array */
-function parseTags(tagsStr) {
-  if (!tagsStr) return [];
-  return tagsStr
-    .split(',')
-    .map(s => s.trim())
-    .filter(Boolean)
-    .slice(0, 4);
+/* Parse tags string → array, fallback to endpoint types */
+const ENDPOINT_LABEL = {
+  'openai': 'Chat',
+  'image-generation': 'Image',
+  'embeddings': 'Embedding',
+  'audio': 'Audio',
+  'speech': 'TTS',
+  'transcription': 'STT',
+  'video': 'Video',
+  'rerank': 'Rerank',
+  'moderation': 'Moderation',
+};
+
+function getDisplayTags(model) {
+  const tagStr = model.tags || '';
+  const fromTags = tagStr.split(',').map(s => s.trim()).filter(Boolean).slice(0, 3);
+  if (fromTags.length > 0) return fromTags;
+  // Fallback: use endpoint types
+  const endpoints = model.supported_endpoint_types || [];
+  return [...new Set(endpoints.map(e => ENDPOINT_LABEL[e] || e).filter(Boolean))].slice(0, 3);
+}
+
+/* Deterministic color from string */
+const PALETTE = ['#7C3AED','#0EA5E9','#10B981','#F59E0B','#EF4444','#8B5CF6','#06B6D4','#F97316'];
+function strColor(str) {
+  let h = 0;
+  for (let i = 0; i < (str || '').length; i++) h = (h * 31 + str.charCodeAt(i)) >>> 0;
+  return PALETTE[h % PALETTE.length];
 }
 
 export default function ModelCard({ model, pricing }) {
@@ -76,7 +96,7 @@ export default function ModelCard({ model, pricing }) {
   const vendor = model.vendor_name || '';
   const modelId = model.model_name || '';
   const icon = resolveLobeIcon(model.icon || model.vendor_icon);
-  const tags = parseTags(model.tags);
+  const tags = getDisplayTags(model);
   const price = getPricingDisplay(pricing);
 
   // Slug for URL
@@ -90,12 +110,15 @@ export default function ModelCard({ model, pricing }) {
     >
       {/* Card header */}
       <div className="pub-card-header">
-        <div className="pub-card-icon">
-          {icon || (vendor ? vendor[0].toUpperCase() : '?')}
+        <div
+          className="pub-card-icon"
+          style={!icon ? { background: strColor(vendor || modelId), color: '#fff', fontWeight: 700, fontSize: 16 } : {}}
+        >
+          {icon || (vendor ? vendor[0].toUpperCase() : modelId[0]?.toUpperCase() || '?')}
         </div>
         <div className="pub-card-meta">
           <div className="pub-card-name" title={modelId}>{modelId}</div>
-          <div className="pub-card-vendor">{vendor}</div>
+          {vendor && <div className="pub-card-vendor">{vendor}</div>}
         </div>
       </div>
 
@@ -104,7 +127,7 @@ export default function ModelCard({ model, pricing }) {
         <div className="pub-card-desc">{model.description}</div>
       )}
 
-      {/* Tags */}
+      {/* Tags / capabilities */}
       {tags.length > 0 && (
         <div className="pub-card-tags">
           {tags.map(tag => (
