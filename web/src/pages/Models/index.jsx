@@ -1,389 +1,450 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import * as LobeIcons from '@lobehub/icons';
 import { API } from '../../helpers/api';
 import PublicLayout from '../../components/layout/PublicLayout';
 import ModelCard from '../../components/public/ModelCard';
 
-/* ── Constants ─────────────────────────────────────── */
-const BASE_PRICE_PER_M = 2; // $2 / 1M tokens ≈ gpt-3.5 baseline
-
-const CAPABILITIES = [
-  { key: 'chat',             icon: '💬', label: '对话'   },
-  { key: 'vision',           icon: '👁',  label: '视觉'   },
-  { key: 'image-generation', icon: '🖼',  label: '图像生成' },
-  { key: 'audio',            icon: '🎵', label: '音频'   },
-  { key: 'video',            icon: '🎬', label: '视频'   },
-  { key: 'embedding',        icon: '📊', label: '向量嵌入' },
-  { key: 'rerank',           icon: '🔀', label: '重排序'  },
-  { key: 'reasoning',        icon: '🧠', label: '推理'   },
-];
-
-const PRICE_TIERS = [
-  { key: 'free',     label: '免费',   color: '#10b981', desc: '$0'         },
-  { key: 'budget',   label: '经济',   color: '#3b82f6', desc: '< $2/1M'   },
-  { key: 'standard', label: '标准',   color: '#f59e0b', desc: '$2–10/1M'  },
-  { key: 'premium',  label: '高端',   color: '#ef4444', desc: '> $10/1M'  },
-];
-
-const SORT_OPTIONS = [
-  { value: 'default',    label: '默认'       },
-  { value: 'name_asc',   label: '名称 A→Z'   },
-  { value: 'price_asc',  label: '价格最低'   },
-  { value: 'price_desc', label: '价格最高'   },
-];
-
-/* ── Helpers ────────────────────────────────────────── */
-function getInputPricePerM(p) {
-  if (!p) return null;
-  if (p.quota_type === 1) return null; // fixed-price-per-call
-  return (p.model_ratio || 0) * BASE_PRICE_PER_M;
+/* ── Lobe icon resolver ─────────────────────────────── */
+function resolveLobeIcon(iconStr, size = 20) {
+  if (!iconStr) return null;
+  try {
+    const parts = iconStr.split('.');
+    let t = LobeIcons[parts[0]];
+    if (!t) return null;
+    for (let i = 1; i < parts.length; i++) { t = t[parts[i]]; if (!t) return null; }
+    if (typeof t === 'function' || t?.$$typeof) return React.createElement(t, { size });
+  } catch (_) {}
+  return null;
 }
 
-function getPriceTier(p) {
+/* ── Pricing helpers ────────────────────────────────── */
+const BASE = 0.002; // $0.002 / 1K tokens
+
+function inputUsd(p) {
   if (!p) return null;
-  if (p.quota_type === 1) return 'standard'; // fixed
-  const usd = (p.model_ratio || 0) * BASE_PRICE_PER_M;
-  if (usd === 0) return 'free';
-  if (usd < 2)   return 'budget';
-  if (usd <= 10) return 'standard';
+  if (p.quota_type === 1) return p.model_price ?? null; // per-call
+  return p.model_ratio != null ? p.model_ratio * BASE * 1000 : null;
+}
+function outputUsd(p) {
+  if (!p || p.quota_type === 1) return null;
+  return p.model_ratio != null && p.completion_ratio != null
+    ? p.completion_ratio * p.model_ratio * BASE * 1000 : null;
+}
+function fmtUsd(v, perCall = false) {
+  if (v == null) return null;
+  const n = Number(v);
+  if (isNaN(n)) return null;
+  const s = n < 0.001 ? n.toFixed(6) : n < 1 ? n.toFixed(4) : n.toFixed(2);
+  return perCall ? `$${s}/次` : `$${s}/M`;
+}
+function priceTier(p) {
+  const u = inputUsd(p);
+  if (u === null) return null;
+  if (u === 0) return 'free';
+  if (u < 2) return 'budget';
+  if (u <= 10) return 'standard';
   return 'premium';
 }
 
-function getEndpointSet(p) {
-  if (!p) return new Set();
-  const types = p.supported_endpoint_types || [];
-  const s = new Set(types);
-  // normalise
-  if (s.has('openai') && !s.has('chat')) s.add('chat');
-  return s;
-}
+/* ── Colour helper ───────────────────────────────────── */
+const PALETTE = ['#7C3AED','#0EA5E9','#10B981','#F59E0B','#EF4444','#8B5CF6','#06B6D4','#F97316','#EC4899','#14B8A6'];
+function strColor(s) { let h=0; for (let i=0;i<(s||'').length;i++) h=(h*31+s.charCodeAt(i))>>>0; return PALETTE[h%PALETTE.length]; }
 
-const VENDOR_COLORS = [
-  '#7c3aed','#3b82f6','#10b981','#f59e0b','#ef4444',
-  '#06b6d4','#8b5cf6','#ec4899','#14b8a6','#f97316',
+/* ── Sidebar accordion data ──────────────────────────── */
+const MODALITY_IN = [
+  { key:'text',  label:'Text',  icon:'📝' },
+  { key:'image', label:'Image', icon:'🖼' },
+  { key:'audio', label:'Audio', icon:'🎵' },
+  { key:'video', label:'Video', icon:'🎬' },
 ];
-function vendorColor(name) {
-  let h = 0;
-  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) & 0xffffffff;
-  return VENDOR_COLORS[Math.abs(h) % VENDOR_COLORS.length];
+const MODALITY_OUT = [
+  { key:'text-out',  label:'Text',  icon:'📝', match:'chat' },
+  { key:'image-out', label:'Image', icon:'🖼', match:'image-generation' },
+  { key:'audio-out', label:'Audio', icon:'🎵', match:'audio' },
+  { key:'video-out', label:'Video', icon:'🎬', match:'video' },
+  { key:'embed-out', label:'Embedding', icon:'📊', match:'embedding' },
+];
+const PRICE_TIERS = [
+  { key:'free',     label:'免费',    dot:'#10b981', desc:'$0' },
+  { key:'budget',   label:'经济',    dot:'#3b82f6', desc:'< $2/M' },
+  { key:'standard', label:'标准',    dot:'#f59e0b', desc:'$2–10/M' },
+  { key:'premium',  label:'高端',    dot:'#ef4444', desc:'> $10/M' },
+];
+const CATEGORIES = [
+  { key:'chat',             icon:'💬', label:'Chat / Text' },
+  { key:'vision',           icon:'👁',  label:'Vision' },
+  { key:'image-generation', icon:'🖼',  label:'Image Generation' },
+  { key:'audio',            icon:'🎵', label:'Audio' },
+  { key:'video',            icon:'🎬', label:'Video' },
+  { key:'embedding',        icon:'📊', label:'Embedding' },
+  { key:'rerank',           icon:'🔀', label:'Reranking' },
+  { key:'reasoning',        icon:'🧠', label:'Reasoning' },
+];
+const SORT_OPTIONS = [
+  { value:'default',    label:'Newest' },
+  { value:'price_asc',  label:'Price: Low → High' },
+  { value:'price_desc', label:'Price: High → Low' },
+  { value:'name_asc',   label:'Name A → Z' },
+];
+
+/* ── Accordion section ───────────────────────────────── */
+function Section({ title, defaultOpen = false, children }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="or-section">
+      <button className="or-section-hd" onClick={() => setOpen(o => !o)}>
+        <span>{title}</span>
+        <span className={'or-section-arrow' + (open ? ' open' : '')}>›</span>
+      </button>
+      {open && <div className="or-section-body">{children}</div>}
+    </div>
+  );
 }
 
-/* ── Component ──────────────────────────────────────── */
+/* ── Filter row (checkbox style) ────────────────────── */
+function FilterRow({ active, onClick, label, icon, count, dot }) {
+  return (
+    <div className={'or-filter-row' + (active ? ' active' : '')} onClick={onClick}>
+      {dot && <span className="or-dot" style={{ background: dot }} />}
+      {icon && <span className="or-row-icon">{icon}</span>}
+      <span className="or-row-label">{label}</span>
+      {count != null && <span className="or-row-count">{count}</span>}
+    </div>
+  );
+}
+
+/* ── Model list row ──────────────────────────────────── */
+function ModelRow({ model, pricing }) {
+  const vendorSlug = model.vendor_name || 'unknown';
+  const modelSlug  = encodeURIComponent(model.model_name);
+  const icon       = resolveLobeIcon(model.icon || model.vendor_icon, 22);
+  const inUsd      = inputUsd(pricing);
+  const outUsd     = outputUsd(pricing);
+  const isPerCall  = pricing?.quota_type === 1;
+  const inStr      = fmtUsd(inUsd, isPerCall);
+  const outStr     = fmtUsd(outUsd);
+
+  /* tags from description tags or endpoint types */
+  const rawTags = (model.tags || '').split(',').map(s => s.trim()).filter(Boolean);
+  const endpointTags = (model.endpoint_types || [])
+    .filter(t => t !== 'openai' && t !== 'chat')
+    .map(t => ({ 'image-generation':'Image','audio':'Audio','video':'Video',
+                 'embedding':'Embedding','rerank':'Rerank','reasoning':'Reasoning',
+                 'vision':'Vision' }[t] || null))
+    .filter(Boolean);
+  const chips = rawTags.length ? rawTags.slice(0,3) : endpointTags.slice(0,3);
+
+  return (
+    <Link to={`/${vendorSlug}/${modelSlug}`} className="or-model-row">
+      <div className="or-row-left">
+        <div className="or-row-icon-wrap">
+          {icon
+            ? <span className="or-model-icon">{icon}</span>
+            : <span className="or-model-icon" style={{ background: strColor(model.vendor_name || model.model_name), color:'#fff' }}>
+                {(model.vendor_name || model.model_name || '?')[0].toUpperCase()}
+              </span>
+          }
+        </div>
+        <div className="or-row-body">
+          <div className="or-row-name">
+            {model.vendor_name
+              ? <><span className="or-row-vendor">{model.vendor_name}:</span> {model.model_name}</>
+              : model.model_name}
+          </div>
+          {chips.length > 0 && (
+            <div className="or-row-chips">
+              {chips.map(c => <span key={c} className="or-chip">{c}</span>)}
+            </div>
+          )}
+          {model.description && (
+            <div className="or-row-desc">{model.description}</div>
+          )}
+          <div className="or-row-meta">
+            {model.vendor_name && <span>by <span className="or-meta-vendor">{model.vendor_name}</span></span>}
+            {inStr  && <><span className="or-meta-sep">|</span><span>{inStr} input</span></>}
+            {outStr && <><span className="or-meta-sep">|</span><span>{outStr} output</span></>}
+          </div>
+        </div>
+      </div>
+    </Link>
+  );
+}
+
+/* ══════════════════════════════════════════════════════
+   Main page component
+   ══════════════════════════════════════════════════════ */
 export default function ModelsPage() {
   const { t } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  const [allModels, setAllModels]   = useState([]);
+  const [allModels,  setAllModels]  = useState([]);
   const [pricingMap, setPricingMap] = useState({});
-  const [loading, setLoading]       = useState(true);
+  const [loading,    setLoading]    = useState(true);
+  const [viewMode,   setViewMode]   = useState('list'); // 'list' | 'grid'
   const [vendorSearch, setVendorSearch] = useState('');
   const [vendorExpanded, setVendorExpanded] = useState(false);
 
-  /* active filters from URL */
-  const qParam       = searchParams.get('q')    || '';
-  const vendorParam  = searchParams.get('vendor')|| '';
-  const capParam     = searchParams.get('cap')   || '';    // capability
-  const tierParam    = searchParams.get('tier')  || '';    // price tier
-  const sortParam    = searchParams.get('sort')  || 'default';
+  /* URL params */
+  const q       = searchParams.get('q')      || '';
+  const vendor  = searchParams.get('vendor') || '';
+  const cap     = searchParams.get('cap')    || '';
+  const tier    = searchParams.get('tier')   || '';
+  const modIn   = searchParams.get('modin')  || '';
+  const modOut  = searchParams.get('modout') || '';
+  const sort    = searchParams.get('sort')   || 'default';
+  const [searchInput, setSearchInput] = useState(q);
+  useEffect(() => setSearchInput(q), [q]);
 
-  const [searchInput, setSearchInput] = useState(qParam);
-  const searchRef = useRef(null);
+  const setP = useCallback((key, val) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev);
+      val ? next.set(key, val) : next.delete(key);
+      next.delete('page');
+      return next;
+    });
+  }, [setSearchParams]);
 
-  useEffect(() => { setSearchInput(qParam); }, [qParam]);
+  const clearAll = () => { setSearchParams({}); setSearchInput(''); };
 
-  /* ── Load data ── */
+  /* ── Load ── */
   useEffect(() => {
     let alive = true;
-    async function load() {
-      try {
-        const res = await API.get('/api/pricing');
-        if (!alive) return;
-        const pricingArr = res.data?.data || [];
-        const pricingVendors = res.data?.vendors || [];
+    API.get('/api/pricing').then(res => {
+      if (!alive) return;
+      const arr = res.data?.data || [];
+      const vendors = Array.isArray(res.data?.vendors) ? res.data.vendors : Object.values(res.data?.vendors || {});
+      const map = {};
+      arr.forEach(p => { map[p.model_name] = p; });
 
-        const vendorArr = Array.isArray(pricingVendors)
-          ? pricingVendors
-          : Object.values(pricingVendors);
+      const models = arr.map(p => {
+        const v = vendors.find(vv => (vv.Id || vv.id) === p.vendor_id);
+        return {
+          model_name:     p.model_name,
+          description:    p.description || '',
+          icon:           p.icon || '',
+          tags:           p.tags || '',
+          vendor_id:      p.vendor_id,
+          vendor_name:    v ? (v.Name || v.name || '') : '',
+          vendor_icon:    v ? (v.Icon || v.icon || '') : '',
+          endpoint_types: p.supported_endpoint_types || [],
+        };
+      });
 
-        const map = {};
-        pricingArr.forEach(p => { map[p.model_name] = p; });
-
-        const models = pricingArr.map(p => {
-          const v = vendorArr.find(vv => (vv.Id || vv.id) === p.vendor_id);
-          return {
-            model_name:  p.model_name,
-            description: p.description || '',
-            icon:        p.icon || '',
-            tags:        p.tags || '',
-            vendor_id:   p.vendor_id,
-            vendor_name: v ? (v.Name || v.name || '') : '',
-            vendor_icon: v ? (v.Icon || v.icon || '') : '',
-            endpoint_types: p.supported_endpoint_types || [],
-          };
-        });
-
-        setAllModels(models);
-        setPricingMap(map);
-      } catch (e) {
-        console.error(e);
-      } finally {
-        if (alive) setLoading(false);
-      }
-    }
-    load();
+      setAllModels(models);
+      setPricingMap(map);
+    }).catch(console.error).finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, []);
 
-  /* ── Derived stats ── */
+  /* ── Derived counts ── */
   const vendorStats = useMemo(() => {
-    const map = {};
-    allModels.forEach(m => {
-      const name = m.vendor_name || '其他';
-      map[name] = (map[name] || 0) + 1;
+    const m = {};
+    allModels.forEach(model => {
+      const n = model.vendor_name || '其他';
+      m[n] = (m[n] || 0) + 1;
     });
-    return Object.entries(map)
-      .map(([name, count]) => ({ name, count }))
+    return Object.entries(m).map(([name, count]) => ({ name, count }))
       .sort((a, b) => b.count - a.count);
   }, [allModels]);
 
-  const capStats = useMemo(() => {
-    const map = {};
-    allModels.forEach(m => {
-      const types = m.endpoint_types || [];
-      const s = new Set(types);
-      if (s.has('openai') && !s.has('chat')) s.add('chat');
-      CAPABILITIES.forEach(c => {
-        if (s.has(c.key)) map[c.key] = (map[c.key] || 0) + 1;
-      });
+  const capCounts = useMemo(() => {
+    const m = {};
+    allModels.forEach(model => {
+      const s = new Set(model.endpoint_types);
+      if (s.has('openai')) s.add('chat');
+      if (s.has('chat') || s.has('openai')) s.add('chat');
+      CATEGORIES.forEach(c => { if (s.has(c.key)) m[c.key] = (m[c.key] || 0) + 1; });
     });
-    return map;
+    return m;
   }, [allModels]);
 
-  const tierStats = useMemo(() => {
-    const map = { free: 0, budget: 0, standard: 0, premium: 0 };
-    allModels.forEach(m => {
-      const tier = getPriceTier(pricingMap[m.model_name]);
-      if (tier) map[tier] = (map[tier] || 0) + 1;
+  const tierCounts = useMemo(() => {
+    const m = { free:0, budget:0, standard:0, premium:0 };
+    allModels.forEach(model => {
+      const t2 = priceTier(pricingMap[model.model_name]);
+      if (t2) m[t2] = (m[t2] || 0) + 1;
     });
-    return map;
+    return m;
   }, [allModels, pricingMap]);
 
-  /* ── Filtered & sorted list ── */
+  /* ── Filter & sort ── */
   const filtered = useMemo(() => {
     let list = allModels;
-    if (qParam) {
-      const lq = qParam.toLowerCase();
+
+    if (q) {
+      const lq = q.toLowerCase();
       list = list.filter(m =>
         m.model_name.toLowerCase().includes(lq) ||
         m.description.toLowerCase().includes(lq) ||
         m.vendor_name.toLowerCase().includes(lq)
       );
     }
-    if (vendorParam) list = list.filter(m => m.vendor_name === vendorParam);
-    if (capParam) {
+    if (vendor) list = list.filter(m => m.vendor_name === vendor);
+    if (cap) {
       list = list.filter(m => {
-        const s = getEndpointSet(pricingMap[m.model_name]);
-        return s.has(capParam);
+        const s = new Set(m.endpoint_types);
+        if (s.has('openai')) s.add('chat');
+        return s.has(cap);
       });
     }
-    if (tierParam) {
-      list = list.filter(m => getPriceTier(pricingMap[m.model_name]) === tierParam);
-    }
-    // sort
-    if (sortParam === 'name_asc') {
-      list = [...list].sort((a, b) => a.model_name.localeCompare(b.model_name));
-    } else if (sortParam === 'price_asc') {
-      list = [...list].sort((a, b) => {
-        const ap = getInputPricePerM(pricingMap[a.model_name]) ?? 9999;
-        const bp = getInputPricePerM(pricingMap[b.model_name]) ?? 9999;
-        return ap - bp;
-      });
-    } else if (sortParam === 'price_desc') {
-      list = [...list].sort((a, b) => {
-        const ap = getInputPricePerM(pricingMap[a.model_name]) ?? -1;
-        const bp = getInputPricePerM(pricingMap[b.model_name]) ?? -1;
-        return bp - ap;
+    if (tier) list = list.filter(m => priceTier(pricingMap[m.model_name]) === tier);
+    if (modIn) {
+      // text = has chat; image = has vision; audio = has audio input; video = has video
+      const MAP = { text:'chat', image:'vision', audio:'audio', video:'video' };
+      const need = MAP[modIn];
+      if (need) list = list.filter(m => {
+        const s = new Set(m.endpoint_types);
+        if (s.has('openai')) s.add('chat');
+        return s.has(need);
       });
     }
+    if (modOut) {
+      const need = MODALITY_OUT.find(o => o.key === modOut)?.match;
+      if (need) list = list.filter(m => m.endpoint_types.includes(need));
+    }
+
+    if (sort === 'name_asc') list = [...list].sort((a,b) => a.model_name.localeCompare(b.model_name));
+    else if (sort === 'price_asc')  list = [...list].sort((a,b) => (inputUsd(pricingMap[a.model_name]) ?? 9999) - (inputUsd(pricingMap[b.model_name]) ?? 9999));
+    else if (sort === 'price_desc') list = [...list].sort((a,b) => (inputUsd(pricingMap[b.model_name]) ?? -1) - (inputUsd(pricingMap[a.model_name]) ?? -1));
     return list;
-  }, [allModels, pricingMap, qParam, vendorParam, capParam, tierParam, sortParam]);
+  }, [allModels, pricingMap, q, vendor, cap, tier, modIn, modOut, sort]);
 
-  /* ── Param helpers ── */
-  const setParam = useCallback((key, val) => {
-    setSearchParams(prev => {
-      const next = new URLSearchParams(prev);
-      if (val) next.set(key, val); else next.delete(key);
-      next.delete('page');
-      return next;
-    });
-  }, [setSearchParams]);
+  const activeCount = [q, vendor, cap, tier, modIn, modOut].filter(Boolean).length;
 
-  const clearAll = () => {
-    setSearchParams({});
-    setSearchInput('');
-  };
-
-  const activeCount = [qParam, vendorParam, capParam, tierParam].filter(Boolean).length;
-
-  /* ── Vendor list (with search + expand) ── */
+  /* visible vendors in sidebar */
   const visibleVendors = useMemo(() => {
     const searched = vendorSearch
       ? vendorStats.filter(v => v.name.toLowerCase().includes(vendorSearch.toLowerCase()))
       : vendorStats;
-    return vendorExpanded ? searched : searched.slice(0, 8);
+    return vendorExpanded ? searched : searched.slice(0, 10);
   }, [vendorStats, vendorSearch, vendorExpanded]);
 
   /* ── Render ── */
   return (
     <PublicLayout>
-      <div className="pub-page">
-        <div className="pub-models-layout">
+      <div className="or-page">
+        <div className="or-layout">
 
-          {/* ════ Sidebar ════ */}
-          <aside className="pub-sidebar-v2">
+          {/* ════════ Sidebar ════════ */}
+          <aside className="or-sidebar">
 
-            {/* Clear all */}
-            {activeCount > 0 && (
-              <button className="pub-clear-btn" onClick={clearAll}>
-                清除全部筛选 ({activeCount})
-              </button>
-            )}
+            <Section title="Input Modalities" defaultOpen>
+              {MODALITY_IN.map(m => (
+                <FilterRow
+                  key={m.key}
+                  active={modIn === m.key}
+                  onClick={() => setP('modin', modIn === m.key ? '' : m.key)}
+                  icon={m.icon} label={m.label}
+                />
+              ))}
+            </Section>
 
-            {/* ── Vendor ── */}
-            <div className="pub-filter-section">
-              <div className="pub-filter-section-title">
-                <span>服务商</span>
-                <span className="pub-filter-section-count">{vendorStats.length}</span>
-              </div>
+            <Section title="Output Modalities">
+              {MODALITY_OUT.map(m => (
+                <FilterRow
+                  key={m.key}
+                  active={modOut === m.key}
+                  onClick={() => setP('modout', modOut === m.key ? '' : m.key)}
+                  icon={m.icon} label={m.label}
+                />
+              ))}
+            </Section>
+
+            <Section title="Prompt Pricing">
+              {PRICE_TIERS.map(tier2 => (
+                <FilterRow
+                  key={tier2.key}
+                  active={tier === tier2.key}
+                  onClick={() => setP('tier', tier === tier2.key ? '' : tier2.key)}
+                  dot={tier2.dot}
+                  label={`${tier2.label}  ${tier2.desc}`}
+                  count={tierCounts[tier2.key]}
+                />
+              ))}
+            </Section>
+
+            <Section title="Categories" defaultOpen>
+              {CATEGORIES.map(c => {
+                const cnt = capCounts[c.key];
+                if (!cnt) return null;
+                return (
+                  <FilterRow
+                    key={c.key}
+                    active={cap === c.key}
+                    onClick={() => setP('cap', cap === c.key ? '' : c.key)}
+                    icon={c.icon} label={c.label} count={cnt}
+                  />
+                );
+              })}
+            </Section>
+
+            <Section title="Providers" defaultOpen>
               <input
-                className="pub-vendor-search"
-                placeholder="搜索服务商..."
+                className="or-vendor-search"
+                placeholder="搜索..."
                 value={vendorSearch}
                 onChange={e => setVendorSearch(e.target.value)}
               />
-              <div
-                className={'pub-vendor-item' + (!vendorParam ? ' active' : '')}
-                onClick={() => setParam('vendor', '')}
-              >
-                <span className="pub-vendor-all-icon">✦</span>
-                <span className="pub-vendor-name">全部服务商</span>
-                <span className="pub-vendor-count">{allModels.length}</span>
-              </div>
               {visibleVendors.map(v => (
-                <div
+                <FilterRow
                   key={v.name}
-                  className={'pub-vendor-item' + (vendorParam === v.name ? ' active' : '')}
-                  onClick={() => setParam('vendor', vendorParam === v.name ? '' : v.name)}
-                >
-                  <span
-                    className="pub-vendor-avatar"
-                    style={{ background: vendorColor(v.name) }}
-                  >
-                    {v.name[0]?.toUpperCase()}
-                  </span>
-                  <span className="pub-vendor-name">{v.name}</span>
-                  <span className="pub-vendor-count">{v.count}</span>
-                </div>
+                  active={vendor === v.name}
+                  onClick={() => setP('vendor', vendor === v.name ? '' : v.name)}
+                  label={v.name}
+                  count={v.count}
+                  icon={<span style={{
+                    display:'inline-flex', alignItems:'center', justifyContent:'center',
+                    width:16, height:16, borderRadius:4, fontSize:9, fontWeight:700,
+                    color:'#fff', background:strColor(v.name), flexShrink:0
+                  }}>{v.name[0]?.toUpperCase()}</span>}
+                />
               ))}
-              {vendorStats.length > 8 && !vendorSearch && (
-                <button
-                  className="pub-expand-btn"
-                  onClick={() => setVendorExpanded(x => !x)}
-                >
-                  {vendorExpanded
-                    ? '收起'
-                    : `查看更多 +${vendorStats.length - 8}`}
+              {vendorStats.length > 10 && !vendorSearch && (
+                <button className="or-expand-btn" onClick={() => setVendorExpanded(x => !x)}>
+                  {vendorExpanded ? '收起 ↑' : `查看更多 +${vendorStats.length - 10}`}
                 </button>
               )}
-            </div>
-
-            {/* ── Capabilities ── */}
-            <div className="pub-filter-section">
-              <div className="pub-filter-section-title">
-                <span>能力类型</span>
-              </div>
-              <div
-                className={'pub-cap-item' + (!capParam ? ' active' : '')}
-                onClick={() => setParam('cap', '')}
-              >
-                <span className="pub-cap-icon">🌐</span>
-                <span className="pub-cap-label">全部类型</span>
-                <span className="pub-vendor-count">{allModels.length}</span>
-              </div>
-              {CAPABILITIES.map(c => {
-                const cnt = capStats[c.key] || 0;
-                if (!cnt) return null;
-                return (
-                  <div
-                    key={c.key}
-                    className={'pub-cap-item' + (capParam === c.key ? ' active' : '')}
-                    onClick={() => setParam('cap', capParam === c.key ? '' : c.key)}
-                  >
-                    <span className="pub-cap-icon">{c.icon}</span>
-                    <span className="pub-cap-label">{c.label}</span>
-                    <span className="pub-vendor-count">{cnt}</span>
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* ── Price Tier ── */}
-            <div className="pub-filter-section">
-              <div className="pub-filter-section-title">
-                <span>价格区间</span>
-              </div>
-              <div
-                className={'pub-tier-item' + (!tierParam ? ' active' : '')}
-                onClick={() => setParam('tier', '')}
-              >
-                <span className="pub-tier-dot" style={{ background: '#a1a1aa' }} />
-                <span className="pub-tier-label">全部价格</span>
-                <span className="pub-vendor-count">{allModels.length}</span>
-              </div>
-              {PRICE_TIERS.map(tier => (
-                <div
-                  key={tier.key}
-                  className={'pub-tier-item' + (tierParam === tier.key ? ' active' : '')}
-                  onClick={() => setParam('tier', tierParam === tier.key ? '' : tier.key)}
-                >
-                  <span className="pub-tier-dot" style={{ background: tier.color }} />
-                  <span className="pub-tier-label">{tier.label}</span>
-                  <span className="pub-tier-desc">{tier.desc}</span>
-                  <span className="pub-vendor-count">{tierStats[tier.key] || 0}</span>
-                </div>
-              ))}
-            </div>
+            </Section>
 
           </aside>
 
-          {/* ════ Main content ════ */}
-          <div className="pub-models-main">
+          {/* ════════ Main ════════ */}
+          <div className="or-main">
 
-            {/* ── Top bar ── */}
-            <div className="pub-models-topbar">
-              <form
-                style={{ position: 'relative', flex: 1, maxWidth: 480 }}
-                onSubmit={e => { e.preventDefault(); setParam('q', searchInput.trim()); }}
-              >
-                <span className="pub-search-icon-left">🔍</span>
-                <input
-                  ref={searchRef}
-                  className="pub-search-v2"
-                  placeholder="搜索模型名称、服务商、描述..."
-                  value={searchInput}
-                  onChange={e => setSearchInput(e.target.value)}
-                  onBlur={() => setParam('q', searchInput.trim())}
-                />
-              </form>
-              <div className="pub-topbar-right">
-                <span className="pub-result-count">
-                  {loading ? '加载中…' : `${filtered.length} 个模型`}
-                </span>
+            {/* Top bar */}
+            <div className="or-topbar">
+              <h1 className="or-models-title">Models</h1>
+              <div className="or-topbar-right">
+                <div className="or-search-wrap">
+                  <span className="or-search-icon">⌕</span>
+                  <input
+                    className="or-search"
+                    placeholder="Search"
+                    value={searchInput}
+                    onChange={e => setSearchInput(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && setP('q', searchInput.trim())}
+                    onBlur={() => setP('q', searchInput.trim())}
+                  />
+                </div>
+                {/* View toggle */}
+                <div className="or-view-toggle">
+                  <button
+                    className={'or-view-btn' + (viewMode === 'grid' ? ' active' : '')}
+                    onClick={() => setViewMode('grid')}
+                    title="Grid view"
+                  >⊞</button>
+                  <button
+                    className={'or-view-btn' + (viewMode === 'list' ? ' active' : '')}
+                    onClick={() => setViewMode('list')}
+                    title="List view"
+                  >☰</button>
+                </div>
                 <select
-                  className="pub-sort-select-v2"
-                  value={sortParam}
-                  onChange={e => setParam('sort', e.target.value)}
+                  className="or-sort"
+                  value={sort}
+                  onChange={e => setP('sort', e.target.value)}
                 >
                   {SORT_OPTIONS.map(o => (
                     <option key={o.value} value={o.value}>{o.label}</option>
@@ -392,44 +453,34 @@ export default function ModelsPage() {
               </div>
             </div>
 
-            {/* ── Active filter chips ── */}
-            {activeCount > 0 && (
-              <div className="pub-active-chips">
-                {qParam && (
-                  <span className="pub-active-chip" onClick={() => { setParam('q', ''); setSearchInput(''); }}>
-                    🔍 {qParam} <span className="pub-chip-x">×</span>
-                  </span>
-                )}
-                {vendorParam && (
-                  <span className="pub-active-chip" onClick={() => setParam('vendor', '')}>
-                    📦 {vendorParam} <span className="pub-chip-x">×</span>
-                  </span>
-                )}
-                {capParam && (
-                  <span className="pub-active-chip" onClick={() => setParam('cap', '')}>
-                    {CAPABILITIES.find(c => c.key === capParam)?.icon} {CAPABILITIES.find(c => c.key === capParam)?.label} <span className="pub-chip-x">×</span>
-                  </span>
-                )}
-                {tierParam && (
-                  <span className="pub-active-chip" onClick={() => setParam('tier', '')}>
-                    💲 {PRICE_TIERS.find(t => t.key === tierParam)?.label} <span className="pub-chip-x">×</span>
-                  </span>
-                )}
-                <span className="pub-active-chip pub-clear-chip" onClick={clearAll}>
-                  清除全部
-                </span>
-              </div>
-            )}
+            {/* Count + active chips */}
+            <div className="or-subbar">
+              <span className="or-count">
+                {loading ? '…' : `${filtered.length} models`}
+              </span>
+              {activeCount > 0 && (
+                <div className="or-chips-row">
+                  {q && <span className="or-active-chip" onClick={() => { setP('q',''); setSearchInput(''); }}>🔍 {q} ×</span>}
+                  {vendor  && <span className="or-active-chip" onClick={() => setP('vendor','')}>📦 {vendor} ×</span>}
+                  {cap     && <span className="or-active-chip" onClick={() => setP('cap','')}>{CATEGORIES.find(c=>c.key===cap)?.icon} {CATEGORIES.find(c=>c.key===cap)?.label} ×</span>}
+                  {tier    && <span className="or-active-chip" onClick={() => setP('tier','')}>{PRICE_TIERS.find(t=>t.key===tier)?.label} ×</span>}
+                  {modIn   && <span className="or-active-chip" onClick={() => setP('modin','')}>Input: {MODALITY_IN.find(m=>m.key===modIn)?.label} ×</span>}
+                  {modOut  && <span className="or-active-chip" onClick={() => setP('modout','')}>Output: {MODALITY_OUT.find(m=>m.key===modOut)?.label} ×</span>}
+                  <span className="or-active-chip or-chip-clear" onClick={clearAll}>Clear all</span>
+                </div>
+              )}
+            </div>
 
-            {/* ── Grid ── */}
+            {/* Model list/grid */}
             {loading ? (
-              <div className="pub-model-grid">
-                {Array.from({ length: 12 }).map((_, i) => (
-                  <div key={i} className="pub-model-card pub-skeleton-card">
-                    <div className="pub-skeleton" style={{ height: 44, width: 44, borderRadius: 10 }} />
-                    <div style={{ flex: 1 }}>
-                      <div className="pub-skeleton" style={{ height: 14, width: '60%' }} />
-                      <div className="pub-skeleton" style={{ height: 12, width: '40%', marginTop: 6 }} />
+              <div className="or-list">
+                {Array.from({length:8}).map((_,i) => (
+                  <div key={i} className="or-skeleton-row">
+                    <div className="pub-skeleton" style={{width:36,height:36,borderRadius:8,flexShrink:0}} />
+                    <div style={{flex:1}}>
+                      <div className="pub-skeleton" style={{height:14,width:'35%'}} />
+                      <div className="pub-skeleton" style={{height:12,width:'70%',marginTop:8}} />
+                      <div className="pub-skeleton" style={{height:11,width:'50%',marginTop:6}} />
                     </div>
                   </div>
                 ))}
@@ -437,20 +488,20 @@ export default function ModelsPage() {
             ) : filtered.length === 0 ? (
               <div className="pub-empty">
                 <div className="pub-empty-icon">🔍</div>
-                <div className="pub-empty-title">未找到匹配模型</div>
-                <div className="pub-empty-desc">请尝试调整搜索词或过滤条件</div>
-                <button className="pub-clear-btn" style={{ marginTop: 16, width: 'auto', padding: '8px 20px' }} onClick={clearAll}>
-                  清除全部筛选
-                </button>
+                <div className="pub-empty-title">No models found</div>
+                <div className="pub-empty-desc">Try adjusting your search or filters</div>
+                <button className="pub-clear-btn" style={{marginTop:16,width:'auto',padding:'8px 20px'}} onClick={clearAll}>Clear filters</button>
+              </div>
+            ) : viewMode === 'list' ? (
+              <div className="or-list">
+                {filtered.map(m => (
+                  <ModelRow key={m.model_name} model={m} pricing={pricingMap[m.model_name]} />
+                ))}
               </div>
             ) : (
               <div className="pub-model-grid">
                 {filtered.map(m => (
-                  <ModelCard
-                    key={m.model_name}
-                    model={m}
-                    pricing={pricingMap[m.model_name]}
-                  />
+                  <ModelCard key={m.model_name} model={m} pricing={pricingMap[m.model_name]} />
                 ))}
               </div>
             )}
